@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Team Directory — Local</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+  <style>
+    .futuristic-select {
+      background: #1276F2 !important;
+      color: white !important;
+      font-weight: 700 !important;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      appearance: none;
+      padding-right: 2rem;
+      border: none;
+    }
+    .futuristic-select option {
+      background: #1276F2 !important;
+      color: white !important;
+    }
+    th { font-size: 1.05rem; }
+    td { font-size: 1rem; }
+    .table-container { overflow-x: auto; } /* bottom scrollbar appears when needed */
+    table { min-width: 1100px; table-layout: auto; border-collapse: collapse; }
+    th, td { white-space: nowrap; word-break: normal; padding: 0.75rem; }
+    td.font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Courier New", monospace; }
+    .edit-modal { background: linear-gradient(135deg, rgba(18,124,242,0.12), rgba(99,102,241,0.12)); border: 1px solid rgba(255,255,255,0.06); box-shadow: 0 20px 40px rgba(2,6,23,0.6); }
+    .sort-hdr { cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap:6px; }
+    .caret { font-size: 0.7rem; opacity:0.6; }
+    .actions-locked { opacity: 0.35; pointer-events: none; filter: grayscale(40%); }
+    @font-face { font-family: 'HighTowerTextFallback'; src: local('High Tower Text'), local('HighTowerText'); }
+    .import-heading { font-family: 'HighTowerTextFallback', serif; font-size: 2rem; }
+    @media (max-width: 640px) {
+      th, td { font-size: 0.95rem; }
+      table { min-width: 900px; }
+    }
+  </style>
+</head>
+<body class="bg-gradient-to-tr from-gray-900 via-slate-800 to-slate-900 min-h-screen text-slate-100 p-6">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const {useState, useEffect, useRef} = React;
+
+    async function sha256hex(str) {
+      const enc = new TextEncoder();
+      const buf = await crypto.subtle.digest('SHA-256', enc.encode(str));
+      return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+    }
+
+    function formatIndianMobile(raw) {
+      const digits = (''+raw).replace(/[^0-9]/g,'').slice(0,10);
+      if (digits.length < 10) return digits;
+      return `+91-${digits.slice(0,5)} ${digits.slice(5)}`;
+    }
+
+    function defaultData(){
+      return [
+        {id:1, name:'Asha Patel', region:'North', branch:'Delhi', designation:'Sr. Manager', mobile:'+91-98765 43210', lastUpdated: new Date().toLocaleString()},
+        {id:2, name:'Rohit Kumar', region:'South', branch:'Chennai', designation:'Analyst', mobile:'+91-91234 56789', lastUpdated: new Date().toLocaleString()}
+      ];
+    }
+
+    // default lists used when "Clear All Data"
+    const DEFAULT_REGIONS = ['All',];
+    const DEFAULT_BRANCHES = ['All',];
+
+    function App(){
+      const [data, setData] = useState(()=>{
+        const raw = localStorage.getItem('team_data_v1');
+        return raw ? JSON.parse(raw) : defaultData();
+      });
+
+      const [regions, setRegions] = useState(()=>{
+        const raw = localStorage.getItem('team_regions_v1');
+        return raw ? JSON.parse(raw) : DEFAULT_REGIONS.slice();
+      });
+      const [branches, setBranches] = useState(()=>{
+        const raw = localStorage.getItem('team_branches_v1');
+        return raw ? JSON.parse(raw) : DEFAULT_BRANCHES.slice();
+      });
+
+      const [filterRegion, setFilterRegion] = useState('All');
+      const [filterBranch, setFilterBranch] = useState('All');
+      const [query, setQuery] = useState('');
+      const [sortField, setSortField] = useState('name');
+      const [sortAsc, setSortAsc] = useState(true);
+
+      const [unlocked, setUnlocked] = useState(false);
+      const [isSettingPassword, setIsSettingPassword] = useState(false);
+      const [hasPasswordState, setHasPasswordState] = useState(false);
+      const [showChangePwModal, setShowChangePwModal] = useState(false);
+      const [changePwForm, setChangePwForm] = useState({oldPw:'', newPw:'', newPw2:''});
+
+      const [showAdd, setShowAdd] = useState(false);
+      const [form, setForm] = useState({name:'',region:'North',branch:'Delhi',designation:'',mobile:'', newRegion:'', newBranch:''});
+
+      const [showEdit, setShowEdit] = useState(false);
+      const [editForm, setEditForm] = useState(null);
+
+      const [showImportModal, setShowImportModal] = useState(false);
+      const fileInputRef = useRef(null);
+
+      // persist data to storage
+      useEffect(()=>{ localStorage.setItem('team_data_v1', JSON.stringify(data)); },[data]);
+      useEffect(()=>{ localStorage.setItem('team_regions_v1', JSON.stringify(regions)); },[regions]);
+      useEffect(()=>{ localStorage.setItem('team_branches_v1', JSON.stringify(branches)); },[branches]);
+
+      async function hasPassword(){ return !!localStorage.getItem('team_admin_pw_v1'); }
+      async function setPassword(pw){ const hash = await sha256hex(pw); localStorage.setItem('team_admin_pw_v1', hash); setHasPasswordState(true); }
+      async function checkPassword(pw){ const hash = await sha256hex(pw); return hash === localStorage.getItem('team_admin_pw_v1'); }
+
+      useEffect(()=>{ (async ()=> setHasPasswordState(await hasPassword()))(); },[]);
+
+      async function tryUnlock(){
+        if (!await hasPassword()){
+          if (!confirm('No admin password set. Would you like to set one now?')) return;
+          setIsSettingPassword(true);
+          const newPw = prompt('Enter new admin password (save it somewhere safe):');
+          if (newPw){ await setPassword(newPw); alert('Password set. You will need it to unlock edits.'); setUnlocked(true); }
+          setIsSettingPassword(false);
+          return;
+        }
+        const pw = prompt('Enter admin password to unlock editing:');
+        if (!pw) return;
+        const ok = await checkPassword(pw);
+        if (ok){ setUnlocked(true); alert('Unlocked — you can now add/change numbers.'); }
+        else alert('Incorrect password.');
+      }
+
+      function toggleLock(){ if(unlocked) setUnlocked(false); else tryUnlock(); }
+
+      async function openChangePassword(){
+        if (!await hasPassword()){
+          if (!confirm('No admin password set — do you want to create one now?')) return;
+          const newPw = prompt('Enter new admin password (save it somewhere safe):');
+          if (newPw){ await setPassword(newPw); alert('Password set.'); setHasPasswordState(true); }
+          return;
+        }
+        setChangePwForm({oldPw:'', newPw:'', newPw2:''});
+        setShowChangePwModal(true);
+      }
+
+      async function doChangePassword(){
+        if (!changePwForm.oldPw) { alert('Enter your current (old) password'); return; }
+        const ok = await checkPassword(changePwForm.oldPw);
+        if (!ok){ alert('Old password is incorrect'); return; }
+        if (!changePwForm.newPw || changePwForm.newPw.length < 4){ alert('New password must be at least 4 characters'); return; }
+        if (changePwForm.newPw !== changePwForm.newPw2){ alert('New passwords do not match'); return; }
+        await setPassword(changePwForm.newPw);
+        alert('Password changed successfully.');
+        setShowChangePwModal(false);
+        setHasPasswordState(true);
+      }
+
+      // Remove password remains the same behavior (requires re-entry) but is only shown when unlocked
+      function removePassword(){
+        (async ()=>{
+          if (!await hasPassword()){
+            alert('No admin password is set.');
+            return;
+          }
+          if (!unlocked){
+            alert('You must unlock (authenticate) first to remove the admin password.');
+            return;
+          }
+          if (!confirm('This will remove the admin password. Are you sure you want to continue?')) return;
+          const old = prompt('Enter current admin password to confirm removal:');
+          if (!old) return;
+          if (!await checkPassword(old)){ alert('Incorrect password. Removal aborted.'); return; }
+          localStorage.removeItem('team_admin_pw_v1');
+          setHasPasswordState(false);
+          setUnlocked(false);
+          alert('Admin password removed.');
+        })();
+      }
+
+      // Recompute regions/branches from current data (always include 'All' first)
+      function recomputeRegionsBranchesFromData(currData){
+        const uniqueRegions = Array.from(new Set(currData.map(d=>d.region).filter(Boolean)));
+        const uniqueBranches = Array.from(new Set(currData.map(d=>d.branch).filter(Boolean)));
+        // if there are no regions/branches (empty dataset) revert to defaults so user can start fresh
+        if (uniqueRegions.length === 0) setRegions(DEFAULT_REGIONS.slice());
+        else setRegions(['All', ...uniqueRegions]);
+        if (uniqueBranches.length === 0) setBranches(DEFAULT_BRANCHES.slice());
+        else setBranches(['All', ...uniqueBranches]);
+      }
+
+      // ensure recompute runs after data changes
+      useEffect(()=>{ recomputeRegionsBranchesFromData(data); }, [data]);
+
+      // Add row
+      function addRow(){
+        const fmt = formatIndianMobile(form.mobile);
+        if (fmt.length < 14){ alert('Mobile must have 10 digits'); return; }
+        let finalRegion = form.region;
+        let finalBranch = form.branch;
+        if (form.newRegion && form.newRegion.trim()){
+          finalRegion = form.newRegion.trim();
+        }
+        if (form.newBranch && form.newBranch.trim()){
+          finalBranch = form.newBranch.trim();
+        }
+        const id = Date.now();
+        const newRow = {id, name:form.name || '—', region:finalRegion || '—', branch:finalBranch || '—', designation: form.designation || '—', mobile:fmt, lastUpdated: new Date().toLocaleString()};
+        setData(prev=> [newRow, ...prev]);
+        setShowAdd(false);
+        setForm({name:'',region:regions[1]||'North',branch:branches[1]||'Delhi',designation:'',mobile:'', newRegion:'', newBranch:''});
+      }
+
+      function openEdit(row){
+        if(!unlocked){ alert('Unlock first to edit'); return; }
+        const digits = (row.mobile||'').replace(/[^0-9]/g,'').slice(0,10);
+        setEditForm({...row, mobile: digits, newRegion:'', newBranch:''});
+        setShowEdit(true);
+      }
+
+      function saveEdit(){
+        if(!editForm) return;
+        let finalRegion = editForm.region;
+        let finalBranch = editForm.branch;
+        if (editForm.newRegion && editForm.newRegion.trim()) finalRegion = editForm.newRegion.trim();
+        if (editForm.newBranch && editForm.newBranch.trim()) finalBranch = editForm.newBranch.trim();
+        const updated = {...editForm, region: finalRegion, branch: finalBranch, mobile: formatIndianMobile(editForm.mobile), lastUpdated: new Date().toLocaleString()};
+        setData(prev => prev.map(r => r.id === updated.id ? updated : r));
+        setShowEdit(false);
+        setEditForm(null);
+      }
+
+      function deleteRow(id){
+        if(!unlocked){ alert('Unlock first to delete'); return;}
+        if(!confirm('Delete this entry?')) return;
+        setData(prev=> prev.filter(r=> r.id !== id));
+        // recompute will run from the data useEffect
+      }
+
+      function exportXlsx(){
+        const out = data.map(r=>({Name:r.name,Region:r.region,Branch:r.branch,Designation:r.designation,Mobile:r.mobile,LastUpdated:r.lastUpdated}));
+        const ws = XLSX.utils.json_to_sheet(out);
+        const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Team');
+        XLSX.writeFile(wb, 'team-directory.xlsx');
+      }
+
+      const filtered = data.filter(r=>{
+        if (filterRegion !== 'All' && r.region !== filterRegion) return false;
+        if (filterBranch !== 'All' && r.branch !== filterBranch) return false;
+        if (query.trim()){
+          const q = query.toLowerCase();
+          if (!(r.name.toLowerCase().includes(q) || r.mobile.toLowerCase().includes(q) || (r.designation && r.designation.toLowerCase().includes(q)))) return false;
+        }
+        return true;
+      });
+
+      const sorted = filtered.slice().sort((a,b)=>{
+        const field = sortField;
+        const va = (a[field]||'').toString().toLowerCase();
+        const vb = (b[field]||'').toString().toLowerCase();
+        if (va < vb) return sortAsc ? -1 : 1;
+        if (va > vb) return sortAsc ? 1 : -1;
+        return 0;
+      });
+
+      function toggleSort(field){
+        if (sortField === field) setSortAsc(s=>!s);
+        else { setSortField(field); setSortAsc(true); }
+      }
+
+      function handleFormatMobileInput(e, setter){
+        const raw = e.target.value;
+        setter(f=>({...f, mobile: raw.replace(/[^0-9]/g,'').slice(0,10)}));
+      }
+
+      // Import helpers
+      function onImportClick(){
+        if(!unlocked){ alert('Unlock first to import data.'); return; }
+        setShowImportModal(true);
+      }
+
+      function triggerFileOpen(){
+        setShowImportModal(false);
+        if (fileInputRef.current) fileInputRef.current.click();
+      }
+
+      function handleFile(e){
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev)=>{
+          const dataArr = new Uint8Array(ev.target.result);
+          const wb = XLSX.read(dataArr, {type:'array'});
+          const wsName = wb.SheetNames[0];
+          const ws = wb.Sheets[wsName];
+          const json = XLSX.utils.sheet_to_json(ws, {defval: ''});
+          const imported = json.map((r,idx)=>{
+            const name = r.Name || r['First Name'] || r['FirstName'] || '';
+            const region = r.Region || r.region || '';
+            const branch = r.Branch || r.branch || '';
+            const designation = r.Designation || r.designation || r.Title || '';
+            const mobileRaw = (r.Mobile || r.MobileNo || r['Mobile Number'] || r['Mobile'] || '').toString();
+            const mobile = formatIndianMobile(mobileRaw) || '';
+            return { id: Date.now() + idx, name: name || '—', region: region || '—', branch: branch || '—', designation: designation || '—', mobile: mobile || '', lastUpdated: new Date().toLocaleString() };
+          });
+          if (imported.length === 0){ alert('No rows found in the first sheet.'); return; }
+          setData(prev=> [...imported, ...prev]);
+          alert('Import successful: ' + imported.length + ' rows added.');
+        };
+        reader.readAsArrayBuffer(file);
+        e.target.value = '';
+      }
+
+      // CLEAR ALL DATA feature: visible only when unlocked
+      function clearAllData(){
+  if(!unlocked){ alert('Unlock first to clear data'); return; }
+  if(!confirm('This will remove ALL team data stored locally and make Region/Branch lists empty. Continue?')) return;
+  (async ()=>{
+    if (await hasPassword()){
+      const pw = prompt('Enter admin password to confirm clearing all data:');
+      if (!pw) return;
+      if (!await checkPassword(pw)){ alert('Incorrect password. Aborted.'); return; }
+    }
+    // Remove all team data and make Region/Branch dropdowns empty except "All"
+    setData([]);
+    setRegions(['All']);
+    setBranches(['All']);
+    localStorage.removeItem('team_data_v1');
+    localStorage.removeItem('team_regions_v1');
+    localStorage.removeItem('team_branches_v1');
+    alert('All data cleared. Region & Branch lists are now empty — will rebuild as you add new entries.');
+  })();
+}
+
+
+      return (
+        <div className="max-w-6xl mx-auto">
+          <header className="flex items-center justify-between mb-6">
+            <div>
+              <h1 className="text-3xl font-extrabold">Team Directory</h1>
+              <div className="mt-1 text-sm text-slate-400">Local — dropdowns reflect current data</div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button className={"px-4 py-2 rounded font-semibold " + (unlocked? 'bg-green-600':'bg-red-600')} onClick={toggleLock}>
+                {unlocked? 'Lock' : 'Unlock (admin)'}
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button title="Change / Reset admin password" className="px-3 py-2 bg-slate-700 rounded" onClick={openChangePassword}>
+                  {hasPasswordState ? 'Change Password' : 'Set Password'}
+                </button>
+
+                {hasPasswordState && unlocked && (
+                  <button title="Remove admin password (requires confirmation)" className="px-3 py-2 bg-rose-700 rounded" onClick={removePassword}>
+                    Remove Password
+                  </button>
+                )}
+
+                <button className="px-4 py-2 bg-emerald-600 rounded hover:brightness-110" onClick={()=>{ if(!unlocked){ alert('Unlock first to add numbers.'); return;} setShowAdd(true); }}>Add Number</button>
+
+                <button className="px-4 py-2 bg-sky-500 rounded" onClick={exportXlsx}>Export (.xlsx)</button>
+
+                <button className="px-4 py-2 bg-violet-600 rounded" onClick={onImportClick}>Import (.xlsx)</button>
+
+                {/* Clear all data - only when unlocked */}
+                {unlocked && (
+                  <button className="px-3 py-2 bg-rose-800 rounded" onClick={clearAllData} title="Clear all stored team data and reset lists">Clear All Data</button>
+                )}
+              </div>
+            </div>
+          </header>
+
+          <section className="bg-white/5 rounded-xl p-4 mb-4 shadow-lg">
+            <div className="flex gap-3 flex-wrap items-center">
+              <div>
+                <label className="block text-sm mb-1">Region</label>
+                <select className="futuristic-select rounded p-2" value={filterRegion} onChange={e=>setFilterRegion(e.target.value)}>
+                  {regions.map(r=> <option key={r} value={r}>{r}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Branch</label>
+                <select className="futuristic-select rounded p-2" value={filterBranch} onChange={e=>setFilterBranch(e.target.value)}>
+                  {branches.map(b=> <option key={b} value={b}>{b}</option>)}
+                </select>
+              </div>
+
+              <div className="flex-1">
+                <label className="block text-sm mb-1">Search (name, number or designation)</label>
+                <input value={query} onChange={e=>setQuery(e.target.value)} className="w-full p-2 rounded bg-white/5" placeholder="Type to filter..." />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-sm mr-1">Sort (click header)</label>
+                <button className="px-3 py-2 bg-white/5 rounded" onClick={()=>{ setSortField('name'); setSortAsc(true); }}>Reset</button>
+              </div>
+
+            </div>
+          </section>
+
+          <main>
+            <div className={"table-container rounded-lg p-2 shadow-inner " + (unlocked? 'ring-4 ring-green-400/10':'') }>
+              <table className="text-sm">
+                <thead>
+                  <tr className="text-left text-slate-300">
+                    <th className="align-top"> <span className="sort-hdr" onClick={()=>toggleSort('name')}>Name <span className="caret">{sortField==='name' ? (sortAsc? '▲':'▼') : '↕'}</span></span></th>
+                    <th className="align-top">Mobile</th>
+                    <th className="align-top"> <span className="sort-hdr" onClick={()=>toggleSort('region')}>Region <span className="caret">{sortField==='region' ? (sortAsc? '▲':'▼') : '↕'}</span></span></th>
+                    <th className="align-top"> <span className="sort-hdr" onClick={()=>toggleSort('branch')}>Branch <span className="caret">{sortField==='branch' ? (sortAsc? '▲':'▼') : '↕'}</span></span></th>
+                    <th className="align-top">Designation</th>
+                    <th className="align-top">Last updated</th>
+                    <th className="align-top">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.map(row=> (
+                    <tr key={row.id} className="border-t border-white/5 hover:bg-white/2">
+                      <td className="align-middle">{row.name}</td>
+                      <td className="font-mono align-middle">{row.mobile}</td>
+                      <td className="align-middle">{row.region}</td>
+                      <td className="align-middle">{row.branch}</td>
+                      <td className="align-middle">{row.designation || '—'}</td>
+                      <td className="align-middle">{row.lastUpdated}</td>
+                      <td className={"align-middle " + (unlocked? '':'actions-locked')}>
+                        <div className="flex gap-2">
+                          <button className="px-3 py-1 bg-amber-600 rounded" onClick={()=>openEdit(row)}>Edit</button>
+                          <button className="px-3 py-1 bg-red-600 rounded" onClick={()=>deleteRow(row.id)}>Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {sorted.length===0 && (
+                    <tr><td colSpan={7} className="p-6 text-center text-slate-400">No matches</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </main>
+
+          <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={handleFile} />
+
+          {showImportModal && (
+            <div className="fixed inset-0 flex items-center justify-center bg-black/60 z-60">
+              <div className="bg-slate-900 p-6 rounded-xl w-full max-w-md text-center">
+                <h1 className="import-heading mb-4">Upload your file</h1>
+                <p className="mb-6 text-slate-400">Select an Excel (.xlsx/.xls) file to import team members from the first sheet.</p>
+                <div className="flex justify-center gap-4">
+                  <button className="px-4 py-2 bg-white/5 rounded" onClick={() => setShowImportModal(false)}>Cancel</button>
+                  <button className="px-4 py-2 bg-emerald-600 rounded" onClick={triggerFileOpen}>OK — Choose file</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showAdd && (
+            <div className="fixed inset-0 flex items-center justify-center bg-black/60 z-40">
+              <div className="bg-slate-900 p-6 rounded-xl w-full max-w-md edit-modal">
+                <h3 className="text-xl font-bold mb-3">Add team member</h3>
+                <label className="block text-sm mb-1">Name</label>
+                <input className="w-full p-2 rounded mb-2 bg-white/5 text-black" value={form.name} onChange={e=>setForm(f=>({...f, name:e.target.value}))} />
+                <div className="grid grid-cols-2 gap-2 mb-2">
+                  <div>
+                    <label className="block text-sm mb-1">Region</label>
+                    <select className="w-full p-2 rounded futuristic-select" value={form.region} onChange={e=>setForm(f=>({...f, region:e.target.value, newRegion:''}))}>
+                      {regions.filter(r=>r!=='All').map(r=> <option key={r} value={r}>{r}</option>)}
+                      <option value="__add_new__">-- Add new region --</option>
+                    </select>
+                    {form.region==='__add_new__' && (
+                      <input className="w-full p-2 rounded mt-2 bg-white/5 text-black" placeholder="New region name" value={form.newRegion||''} onChange={e=>setForm(f=>({...f, newRegion:e.target.value}))} />
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1">Branch</label>
+                    <select className="w-full p-2 rounded futuristic-select" value={form.branch} onChange={e=>setForm(f=>({...f, branch:e.target.value, newBranch:''}))}>
+                      {branches.filter(b=>b!=='All').map(b=> <option key={b} value={b}>{b}</option>)}
+                      <option value="__add_new__">-- Add new branch --</option>
+                    </select>
+                    {form.branch==='__add_new__' && (
+                      <input className="w-full p-2 rounded mt-2 bg-white/5 text-black" placeholder="New branch name" value={form.newBranch||''} onChange={e=>setForm(f=>({...f, newBranch:e.target.value}))} />
+                    )}
+                  </div>
+                </div>
+
+                <label className="block text-sm mb-1">Designation</label>
+                <input className="w-full p-2 rounded mb-2 bg-white/5 text-black" value={form.designation} onChange={e=>setForm(f=>({...f, designation:e.target.value}))} placeholder="e.g. Sr. Manager" />
+
+                <label className="block text-sm mb-1">Mobile (10 digits)</label>
+                <input className="w-full p-2 rounded mb-4 bg-white/5 font-mono text-black" value={form.mobile} onChange={e=>handleFormatMobileInput(e, setForm)} placeholder="Enter digits only e.g. 9876543210" />
+                <div className="flex justify-end gap-2">
+                  <button className="px-4 py-2 bg-white/5 rounded" onClick={()=>setShowAdd(false)}>Cancel</button>
+                  <button className="px-4 py-2 bg-emerald-600 rounded" onClick={addRow}>Add</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showEdit && editForm && (
+            <div className="fixed inset-0 flex items-center justify-center bg-black/70 z-50">
+              <div className="w-full max-w-lg p-6 rounded-2xl edit-modal">
+                <h3 className="text-2xl font-extrabold mb-3">Edit member</h3>
+
+                <label className="block text-sm mb-1">Name</label>
+                <input className="w-full p-3 rounded mb-3 bg-white/90 text-black" value={editForm.name} onChange={e=>setEditForm(f=>({...f, name:e.target.value}))} />
+
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="block text-sm mb-1">Region</label>
+                    <select className="w-full p-2 rounded futuristic-select" value={editForm.region || ''} onChange={e=>setEditForm(f=>({...f, region:e.target.value, newRegion:''}))}>
+                      {regions.filter(r=>r!=='All').map(r=> <option key={r} value={r}>{r}</option>)}
+                      <option value="__add_new__">-- Add new region --</option>
+                    </select>
+                    {editForm.region==='__add_new__' && (
+                      <input className="w-full p-2 rounded mt-2 bg-white/90 text-black" placeholder="New region name" value={editForm.newRegion||''} onChange={e=>setEditForm(f=>({...f, newRegion:e.target.value}))} />
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1">Branch</label>
+                    <select className="w-full p-2 rounded futuristic-select" value={editForm.branch || ''} onChange={e=>setEditForm(f=>({...f, branch:e.target.value, newBranch:''}))}>
+                      {branches.filter(b=>b!=='All').map(b=> <option key={b} value={b}>{b}</option>)}
+                      <option value="__add_new__">-- Add new branch --</option>
+                    </select>
+                    {editForm.branch==='__add_new__' && (
+                      <input className="w-full p-2 rounded mt-2 bg-white/90 text-black" placeholder="New branch name" value={editForm.newBranch||''} onChange={e=>setEditForm(f=>({...f, newBranch:e.target.value}))} />
+                    )}
+                  </div>
+                </div>
+
+                <label className="block text-sm mb-1">Designation</label>
+                <input className="w-full p-3 rounded mb-3 bg-white/90 text-black" value={editForm.designation||''} onChange={e=>setEditForm(f=>({...f, designation:e.target.value}))} />
+
+                <label className="block text-sm mb-1">Mobile (10 digits)</label>
+                <input className="w-full p-3 rounded mb-4 bg-white/90 font-mono text-black" value={(editForm.mobile||'').replace(/[^0-9]/g,'').slice(0,10)} onChange={e=>setEditForm(f=>({...f, mobile: e.target.value.replace(/[^0-9]/g,'').slice(0,10)}))} />
+
+                <div className="flex justify-between items-center">
+                  <button className="px-4 py-2 bg-white/5 rounded" onClick={()=>{ setShowEdit(false); setEditForm(null); }}>Cancel</button>
+                  <div className="flex gap-2">
+                    <button className="px-4 py-2 bg-red-600 rounded" onClick={()=>{ if(confirm('Delete this entry?')){ deleteRow(editForm.id); setShowEdit(false); setEditForm(null);} }}>Delete</button>
+                    <button className="px-4 py-2 bg-emerald-600 rounded" onClick={saveEdit}>Save changes</button>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          )}
+
+          {showChangePwModal && (
+            <div className="fixed inset-0 flex items-center justify-center bg-black/70 z-70">
+              <div className="w-full max-w-md p-6 rounded-xl bg-slate-900">
+                <h3 className="text-xl font-bold mb-3">Change admin password</h3>
+                <p className="text-slate-400 mb-4">You must enter the current (old) password to change it.</p>
+                <label className="block text-sm mb-1">Current password</label>
+                <input type="password" value={changePwForm.oldPw} onChange={e=>setChangePwForm(f=>({...f, oldPw:e.target.value}))} className="w-full p-2 rounded mb-2 bg-white/5 text-black" />
+                <label className="block text-sm mb-1">New password</label>
+                <input type="password" value={changePwForm.newPw} onChange={e=>setChangePwForm(f=>({...f, newPw:e.target.value}))} className="w-full p-2 rounded mb-2 bg-white/5 text-black" />
+                <label className="block text-sm mb-1">Confirm new password</label>
+                <input type="password" value={changePwForm.newPw2} onChange={e=>setChangePwForm(f=>({...f, newPw2:e.target.value}))} className="w-full p-2 rounded mb-4 bg-white/5 text-black" />
+
+                <div className="flex justify-end gap-2">
+                  <button className="px-4 py-2 bg-white/5 rounded" onClick={()=>setShowChangePwModal(false)}>Cancel</button>
+                  <button className="px-4 py-2 bg-emerald-600 rounded" onClick={doChangePassword}>Change password</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <footer className="mt-8 text-sm text-slate-500">Tip: Data is stored locally (localStorage). Use Export to backup. Deleting entries now updates Region & Branch dropdowns automatically.</footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
